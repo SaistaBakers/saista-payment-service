@@ -1,4 +1,4 @@
-name: CI Pipeline — Order Service
+name: CI Pipeline — Payment Service
 
 on:
   push:
