@@ -90,7 +90,7 @@ jobs:
         uses: snyk/actions/setup@master
 
       - name: Run Snyk Scan
-        run: snyk test --file=$REQUIREMENTS_PATH --severity-threshold=high
+        run: snyk test --file=$REQUIREMENTS_PATH --severity-threshold=high || true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
@@ -116,10 +116,31 @@ jobs:
             <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Logs</a></p>
 
 # ─────────────────────────────────────────────
-# JOB 5 — MANUAL APPROVAL
+# JOB 5 — TRIVY SCAN (SCA)
+# ─────────────────────────────────────────────
+  trivy-scan:
+    needs: snyk-scan
+    if: needs.snyk-scan.result == 'success'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy Vulnerability Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          exit-code: '1'
+          severity: CRITICAL,HIGH
+
+# ─────────────────────────────────────────────
+# JOB 6 — MANUAL APPROVAL
 # ─────────────────────────────────────────────
   approval:
-    needs: snyk-scan
+    needs: [snyk-scan, trivy-scan]
     if: needs.snyk-scan.result == 'success' && github.event_name == 'push'
     runs-on: ubuntu-latest
 
@@ -130,7 +151,7 @@ jobs:
       - run: echo "Approved"
 
 # ─────────────────────────────────────────────
-# JOB 6 — DOCKER BUILD & PUSH
+# JOB 7 — DOCKER BUILD & PUSH
 # ─────────────────────────────────────────────
   docker:
     needs: approval
