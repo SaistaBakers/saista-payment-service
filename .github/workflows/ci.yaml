@@ -1,4 +1,4 @@
-name: CI Pipeline — Payment Service
+name: CI Pipeline — Payment Services
 
 on:
   push:
