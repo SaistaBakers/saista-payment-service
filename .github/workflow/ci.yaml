@@ -1,0 +1,169 @@
+name: CI Pipeline — Order Service
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PYTHON_VERSION: '3.9'
+  REQUIREMENTS_PATH: src/requirements.txt
+
+jobs:
+
+# ─────────────────────────────────────────────
+# JOB 1 — SONARQUBE SCAN (SCA)
+# ─────────────────────────────────────────────
+  sonar-scan:
+    name: SonarQube Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r $REQUIREMENTS_PATH
+
+      - name: Run SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=${{ github.event.repository.name }}
+            -Dsonar.sources=src
+            -Dsonar.python.version=3.9
+
+# ─────────────────────────────────────────────
+# JOB 2 — NOTIFY IF SONAR FAILS
+# ─────────────────────────────────────────────
+  notify-sonar-failure:
+    needs: sonar-scan
+    if: always() && needs.sonar-scan.result == 'failure'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Email
+        uses: SaistaBakers/saista-user-service/.github/actions/notification-action@main
+        with:
+          subject: "❌ Sonar Failed — ${{ github.repository }}"
+          smtp_password: ${{ secrets.SMTP_PASSWORD }}
+          smtp_username: ${{ secrets.SMTP_USERNAME }}
+          recipient: ${{ secrets.SMTP_RECIPIENT }}
+          body: |
+            <h2>SonarQube Failed</h2>
+            <p>Repository: ${{ github.repository }}</p>
+            <p>Branch: ${{ github.ref_name }}</p>
+            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Logs</a></p>
+
+# ─────────────────────────────────────────────
+# JOB 3 — SNYK SCAN (SAST)
+# ─────────────────────────────────────────────
+  snyk-scan:
+    needs: sonar-scan
+    if: needs.sonar-scan.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r $REQUIREMENTS_PATH
+
+      - name: Setup Snyk
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk Scan
+        run: snyk test --file=$REQUIREMENTS_PATH --severity-threshold=high
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+# ─────────────────────────────────────────────
+# JOB 4 — NOTIFY IF SNYK FAILS
+# ─────────────────────────────────────────────
+  notify-snyk-failure:
+    needs: snyk-scan
+    if: always() && needs.snyk-scan.result == 'failure'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Email
+        uses: SaistaBakers/saista-user-service/.github/actions/notification-action@main
+        with:
+          subject: "❌ Snyk Failed — ${{ github.repository }}"
+          smtp_password: ${{ secrets.SMTP_PASSWORD }}
+          smtp_username: ${{ secrets.SMTP_USERNAME }}
+          recipient: ${{ secrets.SMTP_RECIPIENT }}
+          body: |
+            <h2>Snyk Security Scan Failed</h2>
+            <p>High vulnerabilities detected</p>
+            <p><a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Logs</a></p>
+
+# ─────────────────────────────────────────────
+# JOB 5 — MANUAL APPROVAL
+# ─────────────────────────────────────────────
+  approval:
+    needs: snyk-scan
+    if: needs.snyk-scan.result == 'success' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ github.ref_name == 'main' && 'prod' || 'dev' }}
+
+    steps:
+      - run: echo "Approved"
+
+# ─────────────────────────────────────────────
+# JOB 6 — DOCKER BUILD & PUSH
+# ─────────────────────────────────────────────
+  docker:
+    needs: approval
+    if: needs.approval.result == 'success'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,prefix=${{ github.ref_name }}-,format=short
+            type=raw,value=${{ github.ref_name }}-latest
+            type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
+
+      - name: Build & Push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
