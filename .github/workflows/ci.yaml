@@ -3,8 +3,6 @@ name: CI Pipeline — Payment Services
 on:
   push:
     branches: [main, dev]
-  pull_request:
-    branches: [main, dev]
 
 env:
   REGISTRY: ghcr.io
@@ -141,7 +139,7 @@ jobs:
 # ─────────────────────────────────────────────
   approval:
     needs: [snyk-scan, trivy-scan]
-    if: needs.snyk-scan.result == 'success' && github.event_name == 'push'
+    if: needs.snyk-scan.result == 'success'
     runs-on: ubuntu-latest
 
     environment:
